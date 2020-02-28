@@ -1,0 +1,301 @@
+/*
+
+  Use star trek data to show how to create external tables backed by Azure storage
+  
+  We'll be demonstrating the following schemes
+  
+  wasb:
+  abfs:
+  adl: 
+  
+  This file is written in kogscript and should be run using the Kognitio Console
+  
+  Kogscript is a lua derivitive 
+  
+  Kognitio console can be found in the Client Tools section of:
+
+  https://kognitio.com/all-downloads/
+  
+  The easiest way to get a Kognitio system to test this on is to create a Kubernetes
+  cluster on Azure using the script referenced in the blog post:
+  
+  https://kognitio.com/blog/kognitio-on-kubernetes-on-azure/
+  
+  Run this script connected as the SYS user
+
+*/
+
+-- Activate the connector modules
+create module hadoop;
+alter module hadoop set mode active;
+
+create module java;
+alter module java set mode to active;
+
+--
+-- Create a schema to work in
+--
+drop schema star_trek cascade;
+
+create schema star_trek;
+
+--
+-- Create an internal table and insert some data
+--
+CREATE TABLE star_trek.character_list(
+  title VARCHAR(10),
+  main_series VARCHAR(8),
+  yob SMALLINT,
+  species VARCHAR(7),
+  name VARCHAR(15)
+);
+
+INSERT INTO star_trek.character_list
+VALUES ('Captain','Original',2233,'Human','James T. Kirk')
+      ,('Commander','Original',2230,'Vulcan','Spock')
+      ,('Doctor','Original',2227,'Human','Leonard McCoy')
+      ,('Captain','TNG',2305,'Human','Jean-Luc Picard')
+      ,('Commander','TNG',2338,'Android','Data')
+      ,('Commander','TNG',2340,'Klingon','Worf')
+      ,('Ambassador','Original',2165,'Vulcan','Sarek')
+      ,('Doctor','TNG',2324,'Human','Beverly Crusher')
+      ,('Commander','Voyager',2264,'Vulcan','Tuvok')
+      ,('Lieutenant','Voyager',2349,'Klingon','B''Elanna Torres')
+      ,('Lieutenant','TNG',2348,'Human','Wesley Crusher')
+      ,('Lieutenant','Voyager',2349,'Human','Harry Kim');
+      
+select * from star_trek.character_list;
+
+--
+-- Define the storage keys - these are output by the script that creates the Kognitio on AKS cluster
+--   you need to put these in the variables below or see the script for details of how to get the
+--   same information for your existing storage.
+--
+
+SV2_Account = "<replace with Account from script>" 
+SV2_Bucket  ="<replace with bucket from script>"
+SV2_Key = "<replace with Key from script>"
+
+wasb_uri = "wasbs://" .. SV2_Bucket .. "@" .. SV2_Account .. ".blob.core.windows.net"
+wasb_config = "fs.azure.account.key." .. SV2_Account .. ".blob.core.windows.net=" .. SV2_Key
+
+drop connector if exists wasb_block cascade;
+
+create connector wasb_block 
+source hdfs 
+target '
+  uri_location $wasb_uri
+  hadoop_config $wasb_config
+';
+
+create external table star_trek.wasb_block(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from wasb_block target '
+  uri_path "/star-trek/wasb/block/"
+';
+
+insert into star_trek.wasb_block select * from star_trek.character_list;
+
+select * from star_trek.wasb_block;
+
+-----------------------------------------------------
+
+drop connector if exists wasb_orc cascade;
+
+create connector wasb_orc 
+source java 
+target '
+  class com.kognitio.javad.jet.OrcConnector, 
+  uri_location $wasb_uri
+  hadoop_config $wasb_config
+';
+
+create external table star_trek.wasb_orc(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from wasb_orc target '
+  uri_path "/star-trek/wasb/orc/"
+';
+
+insert into star_trek.wasb_orc select * from star_trek.character_list;
+
+select * from star_trek.wasb_orc;
+
+-----------------------------------------------
+
+abfs_uri = "abfss://" .. SV2_Bucket .. "@" .. SV2_Account .. ".dfs.core.windows.net"
+abfs_config = "fs.azure.account.key." .. SV2_Account .. ".dfs.core.windows.net=" .. SV2_Key
+
+drop connector if exists abfs_block cascade;
+
+create connector abfs_block 
+source hdfs 
+target '
+  uri_location $abfs_uri
+  hadoop_config $abfs_config
+';
+
+create external table star_trek.abfs_block(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from abfs_block target '
+  uri_path "/star-trek/abfs/block/"
+';
+
+insert into star_trek.abfs_block select * from star_trek.character_list;
+
+select * from star_trek.abfs_block;
+
+-----------------------------------------------------
+
+drop connector if exists abfs_orc cascade;
+
+create connector abfs_orc 
+source java 
+target '
+  class com.kognitio.javad.jet.OrcConnector, 
+  uri_location $abfs_uri
+  hadoop_config $abfs_config
+';
+
+create external table star_trek.abfs_orc(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from abfs_orc target '
+  uri_path "/star-trek/abfs/orc/"
+';
+
+insert into star_trek.abfs_orc select * from star_trek.character_list;
+
+select * from star_trek.abfs_orc;
+
+-----------------------------------------------
+
+/*
+  Example adl: scheme - access to Azure Datalake Store - the data lake store needs to be created
+  by you and the security set up.
+  
+  Follow instructions in:
+
+  https://hadoop.apache.org/docs/current/hadoop-azure-datalake/index.html#Configuring_Credentials_and_FileSystem
+  
+  Insert the values you get from following the instructions in the "Using Client Keys" section into the DLS_ variables below.
+  
+*/
+
+DLS_Name = "<replace with DLS name>"
+DLS_TokenEndpoint = "<replace with oauth2 token - should look like https://login.microsoftonline.com/########-####-####-####-############/oauth2/token>"
+DLS_ClientId = "<replace with client id>"
+DLS_ClientSecret = "<replace with client secret>"
+
+adl_uri = "adl://" .. DLS_Name .. ".azuredatalakestore.net"
+adl_config = "fs.adl.oauth2.access.token.provider.type=ClientCredential;" 
+          .. "fs.adl.oauth2.refresh.url=" .. DLS_TokenEndpoint .. ";"
+          .. "fs.adl.oauth2.client.id=" .. DLS_ClientId .. ";"
+          .. "fs.adl.oauth2.credential=" .. DLS_ClientSecret
+
+select '$adl_config'; -- see the adl_config string
+
+drop connector if exists adl_block cascade;
+
+create connector adl_block 
+source hdfs 
+target '
+  uri_location $adl_uri
+  hadoop_config $adl_config
+';
+
+create external table star_trek.adl_block(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from adl_block target '
+  uri_path "/star-trek/adl/block/"
+';
+
+insert into star_trek.adl_block select * from star_trek.character_list;
+
+select * from star_trek.adl_block;
+
+-----------------------------------------------------
+
+drop connector if exists adl_orc cascade;
+
+create connector adl_orc 
+source java 
+target '
+  class com.kognitio.javad.jet.OrcConnector, 
+  uri_location $adl_uri
+  hadoop_config $adl_config
+';
+
+create external table star_trek.adl_orc(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from adl_orc target '
+  uri_path "/star-trek2/adl/orc/"
+';
+
+insert into star_trek.adl_orc select * from star_trek.character_list;
+
+select * from star_trek.adl_orc;
+
+-----------------------------------------------------
+
+drop connector if exists adl_parquet cascade;
+
+create connector adl_parquet 
+source java 
+target '
+  class com.kognitio.javad.jet.ParquetConnector, 
+  uri_location $adl_uri
+  hadoop_config $adl_config
+';
+
+create external table star_trek.adl_parquet(
+  title VARCHAR,
+  main_series VARCHAR,
+  yob SMALLINT,
+  species VARCHAR,
+  name VARCHAR
+)
+for insert
+from adl_parquet target '
+  uri_path "/star-trek2/adl/parquet/"
+';
+
+insert into star_trek.adl_parquet select * from star_trek.character_list;
+
+select * from star_trek.adl_parquet;
+
+
